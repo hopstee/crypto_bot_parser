@@ -37,9 +37,6 @@ type App struct {
 	dataDir string
 }
 
-// -bot_id=1559501630 -code=123456789 -token=8226402986:AAGKEEZD8ULDwMHa-LJj13-pL3w71lkj3Hk
-// for local 8253015454:AAFDVdReBW4wQDu5gCBiiAJXaFLPZZg73yw
-
 // New creates a new App instance.
 // Parameters:
 //
