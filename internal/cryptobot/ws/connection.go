@@ -8,12 +8,15 @@ import (
 	"errors"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptrace"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	utls "github.com/refraction-networking/utls"
 )
 
 var reconnectLimiter = time.Tick(5 * time.Millisecond)
@@ -34,6 +37,7 @@ type WSConn struct {
 	userAgent string
 	origin    string
 	client    *http.Client
+	helloID   utls.ClientHelloID
 }
 
 func NewWSConn(
@@ -51,6 +55,7 @@ func NewWSConn(
 		userAgent: userAgent,
 		origin:    origin,
 		client:    client,
+		helloID:   getHelloIDByUA(userAgent),
 	}
 }
 
@@ -89,8 +94,18 @@ func (w *WSConn) Run(ctx context.Context, upstreamBlockedUntil *atomic.Int64) {
 			slog.Duration("sleep for", time.Duration(delay)),
 		)
 
-		time.Sleep(delay)
-		<-reconnectLimiter
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-reconnectLimiter:
+		}
 	}
 }
 
@@ -111,11 +126,15 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 		Jar:               w.client.Jar,
 		EnableCompression: false,
 		HandshakeTimeout:  10 * time.Second,
+		NetDial:           createCustomNetDial(w.helloID),
 	}
 
 	header := http.Header{}
 	header.Set("User-Agent", w.userAgent)
 	header.Set("Origin", w.origin)
+	header.Set("Accept-Language", "en-US,en;q=0.9")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Pragma", "no-cache")
 
 	conn, _, err := dialer.DialContext(
 		cctx,
@@ -137,6 +156,11 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 
 	slog.Info("ws connected")
 
+	conn.SetPongHandler(func(appData string) error {
+		_ = conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+		return nil
+	})
+
 	return w.readLoop(ctx, conn, upstreamBlockedUntil)
 }
 
@@ -156,10 +180,6 @@ func (w *WSConn) closeConn() {
 		_ = w.conn.Close()
 		w.conn = nil
 	}
-
-	if w.addCh == nil {
-		close(w.addCh)
-	}
 }
 
 func (w *WSConn) readLoop(ctx context.Context, conn *websocket.Conn, upstreamBlockedUntil *atomic.Int64) error {
@@ -173,7 +193,48 @@ func (w *WSConn) readLoop(ctx context.Context, conn *websocket.Conn, upstreamBlo
 				return err
 			}
 
-			w.handleFrame(msg, upstreamBlockedUntil)
+			w.handleFrame(ctx, msg, upstreamBlockedUntil)
 		}
 	}
+}
+
+func createCustomNetDial(helloId utls.ClientHelloID) func(network, addr string) (net.Conn, error) {
+	return func(network, addr string) (net.Conn, error) {
+		baseConn, err := net.DialTimeout(network, addr, 10*time.Second)
+		if err != nil {
+			return nil, err
+		}
+
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+
+		uTLSConn := utls.UClient(baseConn, &utls.Config{
+			ServerName: host,
+		}, helloId)
+
+		if err := uTLSConn.Handshake(); err != nil {
+			baseConn.Close()
+			return nil, err
+		}
+
+		return uTLSConn, nil
+	}
+}
+
+func getHelloIDByUA(ua string) utls.ClientHelloID {
+	uaLower := strings.ToLower(ua)
+
+	if strings.Contains(uaLower, "edg/") {
+		return utls.HelloEdge_Auto
+	}
+	if strings.Contains(uaLower, "firefox") {
+		return utls.HelloFirefox_Auto
+	}
+	if strings.Contains(uaLower, "safari") && !strings.Contains(uaLower, "chrome") {
+		return utls.HelloSafari_Auto
+	}
+
+	return utls.HelloChrome_Auto
 }

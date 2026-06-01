@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"crypto_bot_parser/pkg/helpers/ws"
 	"encoding/json"
 	"errors"
@@ -41,7 +42,7 @@ type SocketEvent struct {
 	Data json.RawMessage
 }
 
-func (w *WSConn) handleFrame(msg []byte, upstreamBlockedUntil *atomic.Int64) {
+func (w *WSConn) handleFrame(ctx context.Context, msg []byte, upstreamBlockedUntil *atomic.Int64) {
 	socketEvent, err := w.parseSocketMessage(msg, upstreamBlockedUntil)
 	if err != nil {
 		return
@@ -49,12 +50,12 @@ func (w *WSConn) handleFrame(msg []byte, upstreamBlockedUntil *atomic.Int64) {
 
 	switch socketEvent.Name {
 	case ListUpdate:
-		w.handleP2CListUpdate(socketEvent.Data)
+		w.handleP2CListUpdate(ctx, socketEvent.Data)
 	default:
 	}
 }
 
-func (w *WSConn) handleP2CListUpdate(data json.RawMessage) error {
+func (w *WSConn) handleP2CListUpdate(ctx context.Context, data json.RawMessage) error {
 	var events []ListUpdateMessage
 	if err := json.Unmarshal(data, &events); err != nil {
 		return fmt.Errorf("failed unmarshal websocket event: %w", err)
@@ -64,9 +65,9 @@ func (w *WSConn) handleP2CListUpdate(data json.RawMessage) error {
 		if e.Op == "add" {
 			select {
 			case w.addCh <- &e.Data:
-			default:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			return nil
 		}
 	}
 

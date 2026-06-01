@@ -85,6 +85,7 @@ func (c *Client) Run(ctx context.Context, upstreamBlockedUntil *atomic.Int64) {
 	}
 
 	c.wg.Wait()
+	close(c.addCh)
 }
 
 func (c *Client) readAddEvent() {
