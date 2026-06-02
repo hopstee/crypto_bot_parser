@@ -67,7 +67,7 @@ func NewClient(
 }
 
 func (c *Client) Run(ctx context.Context, upstreamBlockedUntil *atomic.Int64) {
-	go c.readAddEvent()
+	go c.readAddEvent(ctx)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -88,8 +88,16 @@ func (c *Client) Run(ctx context.Context, upstreamBlockedUntil *atomic.Int64) {
 	close(c.addCh)
 }
 
-func (c *Client) readAddEvent() {
-	for data := range c.addCh {
-		c.onAdd(data)
+func (c *Client) readAddEvent(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case data, ok := <-c.addCh:
+			if !ok {
+				return
+			}
+			c.onAdd(data)
+		}
 	}
 }

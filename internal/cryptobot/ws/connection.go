@@ -97,9 +97,11 @@ func (w *WSConn) Run(ctx context.Context, upstreamBlockedUntil *atomic.Int64) {
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
 		case <-timer.C:
 		}
+		timer.Stop()
 
 		select {
 		case <-ctx.Done():
@@ -149,7 +151,15 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 		}
 		return err
 	}
-	defer w.closeConn()
+
+	readLoopDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-readLoopDone:
+		}
+	}()
 
 	w.conn = conn
 	conn.SetReadLimit(64 * 1024)
@@ -161,7 +171,12 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 		return nil
 	})
 
-	return w.readLoop(ctx, conn, upstreamBlockedUntil)
+	err = w.readLoop(ctx, conn, upstreamBlockedUntil)
+
+	close(readLoopDone)
+	w.closeConn()
+
+	return err
 }
 
 func (w *WSConn) sendRaw(payload string) error {
@@ -184,17 +199,12 @@ func (w *WSConn) closeConn() {
 
 func (w *WSConn) readLoop(ctx context.Context, conn *websocket.Conn, upstreamBlockedUntil *atomic.Int64) error {
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				return err
-			}
-
-			w.handleFrame(ctx, msg, upstreamBlockedUntil)
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return err
 		}
+
+		w.handleFrame(ctx, msg, upstreamBlockedUntil)
 	}
 }
 
