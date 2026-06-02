@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto_bot_parser/internal/constants"
 	"crypto_bot_parser/pkg/helpers/backoff"
 	"crypto_bot_parser/pkg/helpers/ws"
@@ -126,6 +127,7 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 		Jar:               w.client.Jar,
 		EnableCompression: false,
 		HandshakeTimeout:  10 * time.Second,
+		TLSClientConfig:   &tls.Config{},
 		NetDial:           createCustomNetDial(w.helloID),
 	}
 
