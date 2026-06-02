@@ -2,7 +2,6 @@ package ws
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto_bot_parser/internal/constants"
 	"crypto_bot_parser/pkg/helpers/backoff"
 	"crypto_bot_parser/pkg/helpers/ws"
@@ -127,8 +126,7 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 		Jar:               w.client.Jar,
 		EnableCompression: false,
 		HandshakeTimeout:  10 * time.Second,
-		TLSClientConfig:   &tls.Config{},
-		NetDial:           createCustomNetDial(w.helloID),
+		NetDialTLSContext: createCustomNetDial(w.helloID),
 	}
 
 	header := http.Header{}
@@ -158,7 +156,7 @@ func (w *WSConn) connectAndServe(ctx context.Context, upstreamBlockedUntil *atom
 
 	slog.Info("ws connected")
 
-	conn.SetPongHandler(func(appData string) error {
+	conn.SetPingHandler(func(appData string) error {
 		_ = conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
 		return nil
 	})
@@ -200,21 +198,40 @@ func (w *WSConn) readLoop(ctx context.Context, conn *websocket.Conn, upstreamBlo
 	}
 }
 
-func createCustomNetDial(helloId utls.ClientHelloID) func(network, addr string) (net.Conn, error) {
-	return func(network, addr string) (net.Conn, error) {
-		baseConn, err := net.DialTimeout(network, addr, 10*time.Second)
+func createCustomNetDial(helloId utls.ClientHelloID) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var dialer net.Dialer
+		baseConn, err := dialer.DialContext(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
 
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
-			return nil, err
+			host = addr
+		}
+
+		spec, err := utls.UTLSIdToSpec(helloId)
+		if err != nil {
+			spec, _ = utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+		}
+
+		for i, ext := range spec.Extensions {
+			if alpnExt, ok := ext.(*utls.ALPNExtension); ok {
+				alpnExt.AlpnProtocols = []string{"http/1.1"}
+				spec.Extensions[i] = alpnExt
+				break
+			}
 		}
 
 		uTLSConn := utls.UClient(baseConn, &utls.Config{
 			ServerName: host,
-		}, helloId)
+		}, utls.HelloCustom)
+
+		if err := uTLSConn.ApplyPreset(&spec); err != nil {
+			baseConn.Close()
+			return nil, err
+		}
 
 		if err := uTLSConn.Handshake(); err != nil {
 			baseConn.Close()
