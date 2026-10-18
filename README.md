@@ -4,6 +4,11 @@
 
 ---
 
+## Info
+This is old version. New version support new CryptoBot API. If you interested in it, contact me.
+
+---
+
 ## English
 
 **Crypto Bot Parser** is a Go-based utility designed to automatically monitor (intercept) P2C transactions within a CryptoBot bot, with the ability to confirm or decline operations.
